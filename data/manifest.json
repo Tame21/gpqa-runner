@@ -1,0 +1,31 @@
+{
+  "source": "https://opencompass.oss-cn-shanghai.aliyuncs.com/datasets/data/gpqa.zip",
+  "homepage": "https://github.com/idavidrein/gpqa",
+  "archive_sha256": "3ea7acd5c550280b428524b33ffe8f5998c9fcfda2250e0b97a12e9c9e78b40f",
+  "files": {
+    "gpqa_diamond.csv": {
+      "bytes": 1373492,
+      "sha256": "41d1213cd7a4998605a26c2798500652572007161b3a92817ba46b35befcd305",
+      "records": 198
+    },
+    "gpqa_main.csv": {
+      "bytes": 3214603,
+      "sha256": "acdeeac8f622267f2cd727d7d474202ea08dec80f7d3c3593b3ef8644f19b8e3",
+      "records": 448
+    },
+    "gpqa_extended.csv": {
+      "bytes": 4091077,
+      "sha256": "0926ee24949d02ed6748eb75a2611546c34479e30ddc42efd01d6f1681aaa48a",
+      "records": 546
+    },
+    "gpqa_experts.csv": {
+      "bytes": 26636,
+      "sha256": "ed1c6864ddfe4c8aaf67b665d9901d36ec4fa8c09f08c5c4e5509865bc41a672",
+      "records": 60
+    },
+    "license.txt": {
+      "bytes": 241,
+      "sha256": "c4591c2eba3382b05a60e8437b7f67cc428539acbd7081d3ffe3fa55a98132db"
+    }
+  }
+}

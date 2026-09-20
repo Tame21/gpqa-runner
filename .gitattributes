@@ -1,0 +1,3 @@
+* text=auto eol=lf
+# Preserve bundled dataset bytes and the checksums in data/manifest.json.
+data/gpqa/* -text
