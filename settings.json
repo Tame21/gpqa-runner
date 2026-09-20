@@ -23,6 +23,12 @@
     "subsets": ["diamond"],
     "prompt": "cot"
   },
+  "acc_len": {
+    "enabled": true,
+    "num_speculative_tokens": null,
+    "metrics_url": "",
+    "timeout": 10
+  },
   "run": {
     "mode": "all",
     "num_prompts": null,

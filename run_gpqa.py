@@ -16,6 +16,8 @@ import subprocess
 import sys
 from urllib.parse import urlsplit, urlunsplit
 
+from acc_len import metrics_url, report_acc_len
+
 
 # Locate this file, never the caller's working directory or ais_bench installation.
 ROOT = Path(__file__).resolve().parent
@@ -93,6 +95,12 @@ def parser(root=None):
     result.add_argument("--debug", action=argparse.BooleanOptionalAction, default=None)
     result.add_argument("--dump-eval-details", action=argparse.BooleanOptionalAction, default=None)
     result.add_argument("--reuse", nargs="?", const="latest", help="Reuse latest outputs or a given run timestamp")
+    result.add_argument("--acc-len", action=argparse.BooleanOptionalAction, default=None,
+                        help="Collect acceptance length after successful all/infer runs (default: enabled)")
+    result.add_argument("--num-spec", "--num-speculative-tokens", dest="num_spec", type=int,
+                        help="Server's speculative token count; inferred from metric positions when omitted")
+    result.add_argument("--metrics-url", help="Override the default model service /metrics endpoint")
+    result.add_argument("--metrics-timeout", type=float, help="Metrics request timeout in seconds (default: 10)")
     return result
 
 
@@ -143,15 +151,20 @@ def load_settings(args, root):
     settings = read_json(root / "settings.json")
     if not isinstance(settings, dict):
         raise ValueError("settings.json must contain a JSON object")
+    metric_defaults = dict(enabled=True, num_speculative_tokens=None, metrics_url="", timeout=10)
+    if not isinstance(settings.get("acc_len", {}), dict):
+        raise ValueError("acc_len must be a JSON object")
+    merge(metric_defaults, settings.get("acc_len", {}))
+    settings["acc_len"] = metric_defaults
     if args.settings:
         override = read_json(resolve_tool_path(args.settings, root))
         if not isinstance(override, dict):
             raise ValueError("--settings must contain a JSON object")
         merge(settings, override)
-    if set(settings) != {"model", "dataset", "run"}:
-        raise ValueError("settings.json must contain only model, dataset and run objects")
+    if set(settings) != {"model", "dataset", "run", "acc_len"}:
+        raise ValueError("settings.json must contain only model, dataset, run and acc_len objects")
     if not all(isinstance(value, dict) for value in settings.values()):
-        raise ValueError("model, dataset and run must be JSON objects")
+        raise ValueError("model, dataset, run and acc_len must be JSON objects")
     model, dataset, run = (settings[name] for name in ("model", "dataset", "run"))
     if "AIS_BENCH_API_KEY" in os.environ:
         model["api_key"] = os.environ["AIS_BENCH_API_KEY"]
@@ -215,6 +228,21 @@ def load_settings(args, root):
     model["type"] = MODEL_TYPE
     model.setdefault("pred_postprocessor", {"type": POSTPROCESSOR})
     model["url"] = normalize_url(model["url"], model.get("enable_ssl", False))
+    metric_options = settings["acc_len"]
+    for option, field in (("acc_len", "enabled"), ("num_spec", "num_speculative_tokens"),
+                          ("metrics_url", "metrics_url"), ("metrics_timeout", "timeout")):
+        if getattr(args, option) is not None:
+            metric_options[field] = getattr(args, option)
+    if not isinstance(metric_options.get("enabled"), bool):
+        raise ValueError("acc_len.enabled must be a boolean")
+    if metric_options.get("num_speculative_tokens") is not None:
+        check_number(metric_options, "num_speculative_tokens", 1, integer=True)
+    check_number(metric_options, "timeout", 0)
+    if metric_options["timeout"] == 0:
+        raise ValueError("acc_len.timeout must be positive")
+    if not isinstance(metric_options.get("metrics_url"), str):
+        raise ValueError("acc_len.metrics_url must be a string")
+    metrics_url(model, metric_options["metrics_url"])
     if model["path"]:
         model["path"] = str(resolve_tool_path(model["path"], root))
         if not Path(model["path"]).exists():
@@ -311,6 +339,18 @@ def build_command(root, config_path, settings, args, extra):
     return command + extra
 
 
+def should_collect_acc_len(settings, extra):
+    # Honor mode/dry-run overrides forwarded to ais_bench after the separator.
+    check = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
+    check.add_argument("--mode", "-m", default=settings["run"]["mode"])
+    check.add_argument("--dry-run", action="store_true")
+    check.add_argument("--search", "-s", action="store_true")
+    check.add_argument("--help", "-h", action="store_true")
+    args, _ = check.parse_known_args(extra)
+    return (settings["acc_len"]["enabled"] and args.mode in ("all", "infer")
+            and not (args.dry_run or args.search or args.help))
+
+
 def main(argv=None):
     cli = parser()
     argv = list(sys.argv[1:] if argv is None else argv)
@@ -336,7 +376,13 @@ def main(argv=None):
         env["PYTHONDONTWRITEBYTECODE"] = "1"
         env.setdefault("HF_HOME", str(ROOT / ".cache" / "huggingface"))
         env.setdefault("HF_DATASETS_CACHE", str(ROOT / ".cache" / "datasets"))
-        return subprocess.run(command, cwd=str(ROOT), env=env, check=False).returncode
+        returncode = subprocess.run(command, cwd=str(ROOT), env=env, check=False).returncode
+        if returncode == 0 and should_collect_acc_len(settings, extra):
+            report_acc_len(settings["model"], settings["acc_len"], ROOT / "outputs" / "acc_len",
+                           context=dict(model=settings["model"]["model"],
+                                        subsets=settings["dataset"]["subsets"],
+                                        num_prompts=settings["run"]["num_prompts"]))
+        return returncode
     except (OSError, ValueError, csv.Error) as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 2

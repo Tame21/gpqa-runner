@@ -15,6 +15,7 @@ from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
 SPEC = importlib.util.spec_from_file_location("gpqa_runner", ROOT / "run_gpqa.py")
 runner = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(runner)
@@ -27,6 +28,7 @@ class RunnerTests(unittest.TestCase):
         self.root = Path(self.temp.name).resolve() / "工具 with spaces"
         self.root.mkdir()
         shutil.copyfile(ROOT / "settings.json", self.root / "settings.json")
+        shutil.copyfile(ROOT / "acc_len.py", self.root / "acc_len.py")
         shutil.copytree(ROOT / "prompts", self.root / "prompts")
 
     def settings(self, *arguments):

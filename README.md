@@ -39,6 +39,50 @@ python run_gpqa.py --host-port 8989 --model step37 --num-prompts 5 --debug
 
 也可以从任意目录调用脚本的完整路径，不必先 `cd` 到工具目录。脚本通过 `Path(__file__).resolve().parent` 自动读取自身所在目录，并在启动时打印 `Tool directory`。数据、配置、提示词、输出以及工具参数中的相对文件路径都以此目录为基准，不需要填写固定盘符或安装路径。Linux、Windows 使用同一份脚本；实际评测的平台支持取决于已安装的 ais_bench。
 
+## 精度评测后的 acc_len 统计
+
+默认在 GPQA 精度评测（`--mode all`）成功完成后，自动请求同一模型服务的 `/metrics`，打印投机解码接受长度，并将结果保存到工具内的 `outputs/acc_len/acc_len_<时间戳>.json`。例如服务配置了 3 个 speculative tokens：
+
+```bash
+python run_gpqa.py --host-port 8989 --model step37 --num-spec 3
+```
+
+`--num-spec` 应与服务端配置一致；省略时根据指标的 `position` 标签自动推断。计算方法与提供的统计脚本一致：
+
+```text
+acceptance_per_pos[i] = num_accepted_tokens_per_pos[i] / num_drafts
+acc_len = 1 + sum(acceptance_per_pos)
+```
+
+例如 `num_drafts=100`，三个位置接受的 token 数为 `[80, 40, 20]`，则接受率为 `[0.8, 0.4, 0.2]`，`acc_len=2.4`。此处的 `acc_len` 是原脚本中的 `acceptance_len`，与 GPQA 答题准确率、单条回答的输出长度不同。
+
+统计口径沿用原脚本：**服务启动以来的累计计数**，聚合 `/metrics` 返回的全部相关序列，不是本次 GPQA 的前后差值；历史请求、其他客户端请求及 warmup 都可能包含在内。多个子集一起运行时，在全部结束后采集一次。
+
+默认指标地址随 `--host-ip`、`--host-port` 或 `--url` 变化，代理 URL 的路径前缀会保留。如果指标使用独立端口或路径，可覆盖完整指标地址：
+
+```bash
+python run_gpqa.py --host-port 8989 --model step37 --num-spec 3 --metrics-url http://127.0.0.1:9000/metrics --metrics-timeout 10
+```
+
+无需安装 `requests` 或 `prometheus_client`，统计使用 Python 标准库实现。读取 `_total` counter 样本时会排除 `_created` 时间戳。无 draft、指标缺失或网络失败时明确提示原因，报告中 `acc_len` 为 `null`，不伪造统计值，也不改变已完成的 GPQA 评测退出状态。`--mode infer` 成功后也会统计；仅评分、可视化、性能模式、dry run、搜索配置或评测失败时不采集。
+
+可通过 `--no-acc-len` 关闭，也可在 `settings.json` 中长期配置：
+
+```json
+"acc_len": {
+  "enabled": true,
+  "num_speculative_tokens": 3,
+  "metrics_url": "",
+  "timeout": 10
+}
+```
+
+已有服务也可单独运行统计脚本，两个位置参数沿用原脚本的端口和 NUM_SPEC：
+
+```bash
+python acc_len.py 8989 3 --host-ip 127.0.0.1
+```
+
 ## 修改参数，无须手写 Python 配置
 
 常用参数可直接通过命令行指定：
@@ -66,6 +110,9 @@ python run_gpqa.py --host-port 8989 --model step37 --num-prompts 5 --debug
 | `--dump-eval-details` | 保存逐题评估详情 |
 | `--reuse [时间戳]` | 复用最近一次 / 指定时间戳的结果 |
 | `--generate-only` / `--dry-run` | 只校验数据、生成配置并打印命令；不访问推理服务 |
+| `--acc-len` / `--no-acc-len` | 开启 / 关闭运行后的接受长度统计，默认开启 |
+| `--num-spec` / `--num-speculative-tokens` | 服务端 speculative token 数，默认从指标位置推断 |
+| `--metrics-url` / `--metrics-timeout` | 指标接口地址 / 请求超时秒数（默认 10） |
 
 例如，服务 URL 可以直接包含 `/v1` 或 `/v1/chat/completions`，工具会规范化地址，避免 ais_bench 再次追加时造成重复路径：
 
@@ -109,6 +156,7 @@ python run_gpqa.py --generation-kwargs @generation.json
 ```text
 gpqa_runner/
 ├── run_gpqa.py
+├── acc_len.py                       # 自动 / 独立统计投机解码接受长度
 ├── settings.json
 ├── prompts/
 │   ├── cot.txt
@@ -126,6 +174,7 @@ gpqa_runner/
 │   ├── datasets/gpqa/gpqa_local.py     # 运行脚本时生成
 │   └── gpqa_benchmark.py              # 本次评测的完整配置，运行脚本时生成
 ├── outputs/                          # ais_bench 的日志、预测和评分结果
+│   └── acc_len/                      # 带时间戳的接受长度报告
 └── tests/
 ```
 
@@ -154,4 +203,4 @@ python run_gpqa.py --mode eval --reuse
 python -m unittest discover -s tests -v
 ```
 
-测试覆盖数据完整性、配置覆盖、参数校验、目录迁移及子进程调用。实际模型精度以连接真实服务后的 ais_bench 输出为准。
+测试覆盖数据完整性、配置覆盖、参数校验、目录迁移、子进程调用，以及 acc_len 计算、指标解析和运行后采集流程。实际模型精度以连接真实服务后的 ais_bench 输出为准。
