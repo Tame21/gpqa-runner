@@ -23,7 +23,7 @@ cd gpqa_runner
 python run_gpqa.py --host-ip 127.0.0.1 --host-port 8989 --model step37
 ```
 
-默认运行 **GPQA Diamond、0-shot CoT chat、精度评测（推理 + 评分）**。默认参数与仓库中的 `vllm_api_general_chat.py` 一致：端口 `8080`、并发 `1`、`max_out_len=512`、温度 `0.01`、非流式、重试 `2` 次；不传 `--model` 时由 ais_bench 查询服务模型名。
+默认运行 **GPQA Diamond、0-shot CoT chat、精度评测（推理 + 评分）**。默认参数从 `settings.json` 读取：端口 `8080`、并发 `1`、`max_out_len=512`、非流式、重试 `2` 次；不传 `--model` 时由 ais_bench 查询服务模型名。默认生成参数为 `temperature=1.0`、`top_p=0.95`、`top_k=20`、`min_p=0.0`、`presence_penalty=1.5`、`repetition_penalty=1.0`、`ignore_eos=false`。
 
 对于需要长推理的模型，建议按模型需要显式调大输出长度，例如：
 
