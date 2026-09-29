@@ -1,0 +1,3 @@
+Answer the following math question. Think step by step. The last line of your response must be "answer:$ANSWER" (without quotes), where ANSWER is a number without commas or units.
+
+Question: {question}

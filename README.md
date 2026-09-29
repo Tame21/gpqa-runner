@@ -1,6 +1,6 @@
-# GPQA 便携评测工具
+# GPQA / GSM8K 便携评测工具
 
-把整个 `gpqa_runner` 文件夹复制到安装了 **ais_bench** 的环境中即可使用。已附带真实 GPQA 数据，不需要重新下载，也不需要修改 `site-packages` 或 ais_bench 安装目录。
+把整个 `gpqa_runner` 文件夹复制到安装了 **ais_bench** 的环境中即可使用。已附带真实 GPQA 和 GSM8K 数据，不需要重新下载，也不需要修改 `site-packages` 或 ais_bench 安装目录。
 
 本仓库仅包含工具本身，不依赖 benchmark 源码。可以单独复制到其他机器或任意目录，也可以放在现有项目根目录下，与 `benchmark/` 同级。
 
@@ -39,9 +39,40 @@ python run_gpqa.py --host-port 8989 --model step37 --num-prompts 5 --debug
 
 也可以从任意目录调用脚本的完整路径，不必先 `cd` 到工具目录。脚本通过 `Path(__file__).resolve().parent` 自动读取自身所在目录，并在启动时打印 `Tool directory`。数据、配置、提示词、输出以及工具参数中的相对文件路径都以此目录为基准，不需要填写固定盘符或安装路径。Linux、Windows 使用同一份脚本；实际评测的平台支持取决于已安装的 ais_bench。
 
+## 运行 GSM8K
+
+在原有入口增加 `--dataset gsm8k` 即可，模型地址、采样参数、并发和输出长度等选项与 GPQA 共用：
+
+```bash
+# 先评测 5 题检查服务
+python run_gpqa.py --dataset gsm8k --host-port 8989 --model step37 --num-prompts 5 --debug
+
+# 完整测试集
+python run_gpqa.py --dataset gsm8k --host-port 8989 --model step37 --max-out-len 32768
+
+# 离线校验数据并生成配置
+python run_gpqa.py --dataset gsm8k --generate-only
+```
+
+GSM8K 默认使用 **test 测试集的 1,319 题、0-shot CoT chat、数字答案准确率**。`--prompt str` 改用字符串形式的 CoT 提示词。提示词位于 `prompts/gsm8k/cot.txt` 和 `prompts/gsm8k/str.txt`，只允许 `{question}` 占位符，要求最后一行输出 `answer:数字`，数字不含千位分隔符或单位。评分复用 AIS Bench 的 `Gsm8kEvaluator`、`gsm8k_postprocess` 和 `gsm8k_dataset_postprocess`，提取预测中的最后一个数字，并与标准答案中 `#### ` 后的数字比较。
+
+`--subset test` 和 `--subset all` 对 GSM8K 都只选择测试集。内置的 `train.jsonl` 有 7,473 题，因为 AIS Bench 加载器要求训练、测试两个文件同时存在；本工具使用 `ZeroRetriever`，训练数据不作为示例加入提示词，也不参与评测。GPQA 的 `diamond/main/extended` 子集不能用于 GSM8K。
+
+长期切换可将 `settings.json` 中的 `dataset` 改为：
+
+```json
+"dataset": {
+  "name": "gsm8k",
+  "subsets": ["test"],
+  "prompt": "cot"
+}
+```
+
+也可在 `--settings` 配置文件中仅写 `{"dataset":{"name":"gsm8k"}}`。通过命令行或覆盖文件切换数据集时，未显式指定的子集会重置为该数据集的默认值。使用 `--dataset gpqa` 切回 GPQA；旧配置省略 `dataset.name` 时仍按 GPQA 处理。
+
 ## 精度评测后的 acc_len 统计
 
-默认在 GPQA 精度评测（`--mode all`）成功完成后，自动请求同一模型服务的 `/metrics`，打印投机解码接受长度，并将结果保存到工具内的 `outputs/acc_len/acc_len_<时间戳>.json`。例如服务配置了 3 个 speculative tokens：
+默认在 GPQA 或 GSM8K 精度评测（`--mode all`）成功完成后，自动请求同一模型服务的 `/metrics`，打印投机解码接受长度，并将结果保存到工具内的 `outputs/acc_len/acc_len_<时间戳>.json`。报告的 `context.dataset` 和 `context.subsets` 标识本次评测数据。例如服务配置了 3 个 speculative tokens：
 
 ```bash
 python run_gpqa.py --host-port 8989 --model step37 --num-spec 3
@@ -54,9 +85,9 @@ acceptance_per_pos[i] = num_accepted_tokens_per_pos[i] / num_drafts
 acc_len = 1 + sum(acceptance_per_pos)
 ```
 
-例如 `num_drafts=100`，三个位置接受的 token 数为 `[80, 40, 20]`，则接受率为 `[0.8, 0.4, 0.2]`，`acc_len=2.4`。此处的 `acc_len` 是原脚本中的 `acceptance_len`，与 GPQA 答题准确率、单条回答的输出长度不同。
+例如 `num_drafts=100`，三个位置接受的 token 数为 `[80, 40, 20]`，则接受率为 `[0.8, 0.4, 0.2]`，`acc_len=2.4`。此处的 `acc_len` 是原脚本中的 `acceptance_len`，与答题准确率、单条回答的输出长度不同。
 
-统计口径沿用原脚本：**服务启动以来的累计计数**，聚合 `/metrics` 返回的全部相关序列，不是本次 GPQA 的前后差值；历史请求、其他客户端请求及 warmup 都可能包含在内。多个子集一起运行时，在全部结束后采集一次。
+统计口径沿用原脚本：**服务启动以来的累计计数**，聚合 `/metrics` 返回的全部相关序列，不是本次评测的前后差值；历史请求、其他客户端请求及 warmup 都可能包含在内。多个子集一起运行时，在全部结束后采集一次。
 
 默认指标地址随 `--host-ip`、`--host-port` 或 `--url` 变化，代理 URL 的路径前缀会保留。如果指标使用独立端口或路径，可覆盖完整指标地址：
 
@@ -64,7 +95,7 @@ acc_len = 1 + sum(acceptance_per_pos)
 python run_gpqa.py --host-port 8989 --model step37 --num-spec 3 --metrics-url http://127.0.0.1:9000/metrics --metrics-timeout 10
 ```
 
-无需安装 `requests` 或 `prometheus_client`，统计使用 Python 标准库实现。读取 `_total` counter 样本时会排除 `_created` 时间戳。无 draft、指标缺失或网络失败时明确提示原因，报告中 `acc_len` 为 `null`，不伪造统计值，也不改变已完成的 GPQA 评测退出状态。`--mode infer` 成功后也会统计；仅评分、可视化、性能模式、dry run、搜索配置或评测失败时不采集。
+无需安装 `requests` 或 `prometheus_client`，统计使用 Python 标准库实现。读取 `_total` counter 样本时会排除 `_created` 时间戳。无 draft、指标缺失或网络失败时明确提示原因，报告中 `acc_len` 为 `null`，不伪造统计值，也不改变已完成的评测退出状态。`--mode infer` 成功后也会统计；仅评分、可视化、性能模式、dry run、搜索配置或评测失败时不采集。
 
 可通过 `--no-acc-len` 关闭，也可在 `settings.json` 中长期配置：
 
@@ -103,8 +134,9 @@ python acc_len.py 8989 3 --host-ip 127.0.0.1
 | `--temperature` / `--ignore-eos` / `--no-ignore-eos` | 生成参数 |
 | `--generation-kwargs` | 合并额外生成参数，支持 JSON 或 `@文件路径` |
 | `--set KEY=VALUE` | 添加 / 覆盖模型配置字段，可重复、可用点号设置嵌套字段 |
-| `--subset diamond main extended` | 指定一个或多个子集；`--subset all` 运行三个子集 |
-| `--prompt cot` / `--prompt str` | 官方 CoT chat / 普通字符串提示词 |
+| `--dataset gpqa` / `--dataset gsm8k` | 选择数据集，默认 GPQA |
+| `--subset` | GPQA：`diamond main extended`；GSM8K：`test`；`all` 选择当前数据集的全部可评测子集 |
+| `--prompt cot` / `--prompt str` | CoT chat / 字符串提示词；GSM8K 两种格式均要求数字答案 |
 | `--num-prompts N` | 每个子集只运行前 N 题 |
 | `--mode` | `all`、`infer`、`eval`、`viz`、`perf`、`perf_viz` |
 | `--dump-eval-details` | 保存逐题评估详情 |
@@ -149,7 +181,7 @@ python run_gpqa.py --generation-kwargs @generation.json
 
 优先级：`settings.json` → `--settings` 指定文件 → 命令行参数 → `--set`。`AIS_BENCH_API_KEY` 覆盖 JSON 中的密钥，`--api-key` 和 `--set api_key=...` 可再覆盖它；`--temperature` / `--ignore-eos` 覆盖 `--generation-kwargs` 中的同名项。命令行覆盖只影响本次生成，不回写 `settings.json`。
 
-`--settings`、`--generation-kwargs @JSON文件` 和 `--path` 中的相对路径统一按工具自身目录解析，也可传绝对路径。例如把 `server.json`、`generation.json` 放进工具目录后，在任何终端目录传入 `--settings server.json --generation-kwargs @generation.json` 都会读取同一套文件。要随工具搬迁的 tokenizer 等文件也应放在工具内并使用相对路径；显式填写的外部绝对路径保持原意。提示词在本目录 `prompts/cot.txt` 和 `prompts/str.txt` 中，可直接修改；保留 `{question}`、`{A}`、`{B}`、`{C}`、`{D}` 占位符及各自的答案格式。
+`--settings`、`--generation-kwargs @JSON文件` 和 `--path` 中的相对路径统一按工具自身目录解析，也可传绝对路径。例如把 `server.json`、`generation.json` 放进工具目录后，在任何终端目录传入 `--settings server.json --generation-kwargs @generation.json` 都会读取同一套文件。要随工具搬迁的 tokenizer 等文件也应放在工具内并使用相对路径；显式填写的外部绝对路径保持原意。GPQA 提示词在本目录 `prompts/cot.txt` 和 `prompts/str.txt` 中，可直接修改；保留 `{question}`、`{A}`、`{B}`、`{C}`、`{D}` 占位符及各自的答案格式。GSM8K 提示词单独放在 `prompts/gsm8k/` 中。
 
 ## 配置、数据与结果的位置
 
@@ -160,29 +192,37 @@ gpqa_runner/
 ├── settings.json
 ├── prompts/
 │   ├── cot.txt
-│   └── str.txt
+│   ├── str.txt
+│   └── gsm8k/                        # GSM8K 的 cot.txt / str.txt
 ├── data/
 │   ├── manifest.json                 # 数据来源、条数和 SHA-256
-│   └── gpqa/
-│       ├── gpqa_diamond.csv           # 198 题
-│       ├── gpqa_main.csv              # 448 题
-│       ├── gpqa_extended.csv          # 546 题
-│       ├── gpqa_experts.csv           # 原包附带的专家元数据，不作为评测子集
-│       └── license.txt
+│   ├── gpqa/
+│   │   ├── gpqa_diamond.csv           # 198 题
+│   │   ├── gpqa_main.csv              # 448 题
+│   │   ├── gpqa_extended.csv          # 546 题
+│   │   ├── gpqa_experts.csv           # 原包附带的专家元数据，不作为评测子集
+│   │   └── license.txt
+│   └── gsm8k/
+│       ├── test.jsonl                 # 1,319 题；实际评测数据
+│       ├── train.jsonl                # 7,473 题；加载器依赖
+│       ├── manifest.json              # 固定版本、来源、条数和 SHA-256
+│       └── LICENSE                    # MIT
 ├── configs/
 │   ├── models/vllm_api/vllm_api_general_chat.py
 │   ├── datasets/gpqa/gpqa_local.py     # 运行脚本时生成
-│   └── gpqa_benchmark.py              # 本次评测的完整配置，运行脚本时生成
+│   ├── datasets/gsm8k/gsm8k_local.py   # 选择 GSM8K 时生成
+│   ├── gpqa_benchmark.py              # 选择 GPQA 时生成的完整配置
+│   └── gsm8k_benchmark.py             # 选择 GSM8K 时生成的完整配置
 ├── outputs/                          # ais_bench 的日志、预测和评分结果
 │   └── acc_len/                      # 带时间戳的接受长度报告
 └── tests/
 ```
 
-每次执行脚本都会根据当前参数重新生成以上三个 Python 配置文件，包含对应的 `vllm_api_general_chat.py`。生成的配置使用 ais_bench 支持的完整类型名称字符串。脚本通过当前解释器执行 `python -m ais_bench.benchmark.cli.main <完整配置路径>`，直接传入完整配置，避免与安装目录中的同名配置混淆。
+每次执行脚本都会重新生成模型配置 `vllm_api_general_chat.py`、当前数据集配置，以及当前数据集的完整配置。选择 GSM8K 时实际传给 AIS Bench 的是 `configs/gsm8k_benchmark.py`；选择 GPQA 时仍使用 `configs/gpqa_benchmark.py`。生成的配置使用 ais_bench 支持的完整类型名称字符串。脚本通过当前解释器执行 `python -m ais_bench.benchmark.cli.main <完整配置路径>`，直接传入完整配置，避免与安装目录中的同名配置混淆。
 
 数据路径在每次启动时解析为当前工具目录的绝对路径，供 ais_bench 读取；生成文件中出现的绝对路径是本次自动计算的结果，不是脚本写死的路径。整个目录移动或改名后，照常执行 `run_gpqa.py` 就会按新位置重新生成配置，不需要手工修改旧配置或设置路径环境变量。生成文件属于可覆盖产物，持久调整请修改 `settings.json`、提示词或脚本。不要同时从同一个工具目录启动多次评测；并行评测可以复制多份工具目录。
 
-脚本不会下载数据。数据缺失、CSV 格式错误或参数错误时会明确报错。三个子集存在重叠，`--subset all` 会分别评测，不应把它们当作互不重复的数据合并统计。API 密钥会进入本地生成配置及 ais_bench 的配置快照，分享文件夹前请移除密钥和运行产物。
+脚本不会下载数据。数据缺失、CSV / JSONL 格式错误或参数错误时会明确报错。GPQA 的三个子集存在重叠，`--subset all` 会分别评测，不应把它们当作互不重复的数据合并统计。API 密钥会进入本地生成配置及 ais_bench 的配置快照，分享文件夹前请移除密钥和运行产物。
 
 可将其他 ais_bench 选项放在 `--` 后透传：
 
@@ -195,7 +235,9 @@ python run_gpqa.py --mode eval --reuse
 
 ## 数据来源与验证
 
-数据按 benchmark 原有 GPQA 文档指定的 [OpenCompass 数据包](https://opencompass.oss-cn-shanghai.aliyuncs.com/datasets/data/gpqa.zip) 原样内置，来源项目为 [idavidrein/gpqa](https://github.com/idavidrein/gpqa)，作者 Irving David Rein，遵循 **CC BY 4.0**，原始许可见 `data/gpqa/license.txt`。`manifest.json` 记录原压缩包及各文件校验值。
+GPQA 数据按 benchmark 原有文档指定的 [OpenCompass 数据包](https://opencompass.oss-cn-shanghai.aliyuncs.com/datasets/data/gpqa.zip) 原样内置，来源项目为 [idavidrein/gpqa](https://github.com/idavidrein/gpqa)，作者 Irving David Rein，遵循 **CC BY 4.0**，原始许可见 `data/gpqa/license.txt`。`data/manifest.json` 记录原压缩包及各文件校验值。
+
+GSM8K 的 `train.jsonl`、`test.jsonl` 来自 [openai/grade-school-math](https://github.com/openai/grade-school-math/tree/3101c7d5072418e28b9008a6636bde82a006892c)，固定版本为 `3101c7d5072418e28b9008a6636bde82a006892c`，按原始字节内置。MIT 许可随数据保存在 `data/gsm8k/LICENSE`，各文件下载地址、条数和 SHA-256 记录在 `data/gsm8k/manifest.json`。
 
 工具的离线测试不需要安装 ais_bench，也不调用模型服务：
 
@@ -203,4 +245,4 @@ python run_gpqa.py --mode eval --reuse
 python -m unittest discover -s tests -v
 ```
 
-测试覆盖数据完整性、配置覆盖、参数校验、目录迁移、子进程调用，以及 acc_len 计算、指标解析和运行后采集流程。实际模型精度以连接真实服务后的 ais_bench 输出为准。
+测试覆盖两套数据的完整性、数据集切换、配置覆盖、参数校验、GSM8K 数字评分配置、目录迁移、子进程调用，以及 acc_len 计算、指标解析和运行后采集流程。实际模型精度以连接真实服务后的 ais_bench 输出为准。

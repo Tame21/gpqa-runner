@@ -1,0 +1,3 @@
+Question: {question}
+Let's think step by step. End with "answer:$ANSWER", where ANSWER is a number without commas or units.
+Answer:

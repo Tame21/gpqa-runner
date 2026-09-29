@@ -146,6 +146,13 @@ class WorkflowTests(unittest.TestCase):
         code, events, _ = self.run_main(exit_code=17)
         self.assertEqual((code, events), (17, ['benchmark']))
 
+    def test_gsm8k_metrics_context_identifies_test_split(self):
+        code, events, report = self.run_main(['--dataset', 'gsm8k', '--num-prompts', '5'])
+        self.assertEqual((code, events), (0, ['benchmark', 'metrics']))
+        self.assertEqual(report.call_args.kwargs['context']['dataset'], 'gsm8k')
+        self.assertEqual(report.call_args.kwargs['context']['subsets'], ['test'])
+        self.assertEqual(report.call_args.kwargs['context']['num_prompts'], 5)
+
     def test_generation_disable_offline_and_forwarded_dry_run_skip_metrics(self):
         for arguments in (['--generate-only'], ['--no-acc-len'], ['--mode', 'eval'], ['--mode', 'perf'],
                           ['--', '--dry-run'], ['--', '--search'], ['--', '-m', 'eval'],

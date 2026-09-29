@@ -1,3 +1,5 @@
 * text=auto eol=lf
-# Preserve bundled dataset bytes and the checksums in data/manifest.json.
+# Preserve bundled dataset bytes and their manifest checksums.
 data/gpqa/* -text
+data/gsm8k/*.jsonl -text
+data/gsm8k/LICENSE -text

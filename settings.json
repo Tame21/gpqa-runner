@@ -25,6 +25,7 @@
     }
   },
   "dataset": {
+    "name": "gpqa",
     "subsets": ["diamond"],
     "prompt": "cot"
   },

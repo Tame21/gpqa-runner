@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate local AIS Bench configs and run the bundled GPQA dataset offline."""
+"""Generate local AIS Bench configs for bundled GPQA and GSM8K data."""
 
 import argparse
 import copy
@@ -22,6 +22,7 @@ from acc_len import metrics_url, report_acc_len
 # Locate this file, never the caller's working directory or ais_bench installation.
 ROOT = Path(__file__).resolve().parent
 SUBSETS = ("diamond", "main", "extended")
+DATASET_SUBSETS = {"gpqa": SUBSETS, "gsm8k": ("test",)}
 MODEL_TYPE = "ais_bench.benchmark.models.VLLMCustomAPIChat"
 POSTPROCESSOR = (
     "ais_bench.benchmark.utils.postprocess.model_postprocessors."
@@ -62,7 +63,7 @@ def merge(target, overrides):
 def parser(root=None):
     root = ROOT if root is None else root
     result = argparse.ArgumentParser(
-        description="Run bundled GPQA with installed ais_bench; all generated files stay in this folder.",
+        description="Run bundled GPQA or GSM8K with installed ais_bench; all generated files stay in this folder.",
         epilog="Extra ais_bench options: append -- followed by those options. See README.md for examples.",
         allow_abbrev=False,
     )
@@ -88,7 +89,10 @@ def parser(root=None):
                         help='Merge JSON or @file (relative to this tool folder), e.g. \'{"top_p":0.95}\'')
     result.add_argument("--set", action="append", default=[], metavar="KEY=VALUE",
                         help="Set a model field (repeatable); dotted keys and JSON values supported")
-    result.add_argument("--subset", nargs="+", choices=(*SUBSETS, "all"))
+    result.add_argument("--dataset", choices=tuple(DATASET_SUBSETS),
+                        help="Dataset to evaluate (default: gpqa; gsm8k uses the test split)")
+    result.add_argument("--subset", nargs="+", choices=(*SUBSETS, "test", "all"),
+                        help="GPQA: diamond/main/extended; GSM8K: test; all selects this dataset's subsets")
     result.add_argument("--prompt", choices=("cot", "str"))
     result.add_argument("--mode", choices=("all", "infer", "eval", "viz", "perf", "perf_viz"))
     result.add_argument("--num-prompts", type=int, help="Use only the first N questions of each selected subset")
@@ -160,6 +164,12 @@ def load_settings(args, root):
         override = read_json(resolve_tool_path(args.settings, root))
         if not isinstance(override, dict):
             raise ValueError("--settings must contain a JSON object")
+        dataset_override = override.get("dataset")
+        if isinstance(dataset_override, dict) and isinstance(settings.get("dataset"), dict):
+            previous_name = settings["dataset"].get("name", "gpqa")
+            if dataset_override.get("name", previous_name) != previous_name and "subsets" not in dataset_override:
+                # A new dataset must not inherit the previous dataset's split names.
+                settings["dataset"].pop("subsets", None)
         merge(settings, override)
     if set(settings) != {"model", "dataset", "run", "acc_len"}:
         raise ValueError("settings.json must contain only model, dataset, run and acc_len objects")
@@ -186,14 +196,23 @@ def load_settings(args, root):
     for key in ("mode", "num_prompts", "debug", "dump_eval_details"):
         if getattr(args, key) is not None:
             run[key] = getattr(args, key)
+    dataset.setdefault("name", "gpqa")
+    if args.dataset is not None and args.dataset != dataset["name"]:
+        dataset["name"] = args.dataset
+        dataset.pop("subsets", None)
+    dataset_name = dataset["name"]
+    if not isinstance(dataset_name, str) or dataset_name not in DATASET_SUBSETS:
+        raise ValueError("dataset.name must be gpqa or gsm8k")
+    allowed_subsets = DATASET_SUBSETS[dataset_name]
     if args.subset is not None:
         dataset["subsets"] = args.subset
     if args.prompt is not None:
         dataset["prompt"] = args.prompt
-    subsets = dataset.get("subsets")
-    if not isinstance(subsets, list) or not subsets or any(s not in (*SUBSETS, "all") for s in subsets):
-        raise ValueError("dataset.subsets must be a nonempty list of diamond, main, extended or all")
-    dataset["subsets"] = list(SUBSETS) if "all" in subsets else list(dict.fromkeys(subsets))
+    subsets = dataset.get("subsets", [allowed_subsets[0]])
+    if not isinstance(subsets, list) or not subsets or any(s not in (*allowed_subsets, "all") for s in subsets):
+        choices = ", ".join((*allowed_subsets, "all"))
+        raise ValueError(f"dataset.subsets for {dataset_name} must be a nonempty list of {choices}")
+    dataset["subsets"] = list(allowed_subsets) if "all" in subsets else list(dict.fromkeys(subsets))
     if dataset.get("prompt") not in ("cot", "str"):
         raise ValueError("dataset.prompt must be cot or str")
     if run.get("mode") not in ("all", "infer", "eval", "viz", "perf", "perf_viz"):
@@ -252,7 +271,37 @@ def load_settings(args, root):
     return settings
 
 
-def validate_data(root, subsets):
+def validate_gsm8k_data(root):
+    counts = {}
+    # AIS Bench's GSM8KDataset loads both files, even for zero-shot test evaluation.
+    for split in ("train", "test"):
+        path = root / "data" / "gsm8k" / f"{split}.jsonl"
+        if not path.is_file():
+            raise ValueError(f"Missing bundled dataset: {path}. Copy the complete gpqa_runner folder including data/.")
+        count = 0
+        with path.open(encoding="utf-8") as handle:
+            for count, line in enumerate(handle, 1):
+                try:
+                    row = json.loads(line)
+                    if (not isinstance(row, dict)
+                            or any(not isinstance(row.get(key), str) or not row[key].strip()
+                                   for key in ("question", "answer"))):
+                        raise ValueError("question and answer must be nonempty strings")
+                    parts = row["answer"].split("#### ")
+                    if len(parts) != 2:
+                        raise ValueError("answer must end with #### followed by a number")
+                    int(parts[1].replace(",", "").strip())
+                except ValueError as exc:
+                    raise ValueError(f"Invalid GSM8K record at {path}:{count}: {exc}") from exc
+        if count == 0:
+            raise ValueError(f"Empty GSM8K dataset: {path}")
+        counts[split] = count
+    return {"test": counts["test"]}
+
+
+def validate_data(root, subsets, dataset_name="gpqa"):
+    if dataset_name == "gsm8k":
+        return validate_gsm8k_data(root)
     counts = {}
     columns = ["Question", "Correct Answer", "Incorrect Answer 1", "Incorrect Answer 2", "Incorrect Answer 3"]
     for subset in subsets:
@@ -275,12 +324,36 @@ def validate_data(root, subsets):
 
 
 def dataset_configs(root, settings):
+    dataset_name = settings.get("name", "gpqa")
     prompt_mode = settings["prompt"]
-    prompt = (root / "prompts" / f"{prompt_mode}.txt").read_text(encoding="utf-8").strip()
+    prompt_dir = root / "prompts"
+    if dataset_name == "gsm8k":
+        prompt_dir /= "gsm8k"
+    prompt = (prompt_dir / f"{prompt_mode}.txt").read_text(encoding="utf-8").strip()
     fields = {field for _, field, _, _ in string.Formatter().parse(prompt) if field is not None}
-    if fields != {"question", "A", "B", "C", "D"}:
-        raise ValueError("Prompt must contain exactly the placeholders {question}, {A}, {B}, {C}, {D}")
+    required_fields = {"question"} if dataset_name == "gsm8k" else {"question", "A", "B", "C", "D"}
+    if fields != required_fields:
+        placeholders = ", ".join("{" + field + "}" for field in sorted(required_fields))
+        raise ValueError(f"Prompt must contain exactly the placeholders {placeholders}")
     template = {"round": [{"role": "HUMAN", "prompt": prompt}]} if prompt_mode == "cot" else prompt
+    if dataset_name == "gsm8k":
+        return [dict(
+            abbr="gsm8k",
+            type="ais_bench.benchmark.datasets.GSM8KDataset",
+            path=str((root / "data" / "gsm8k").resolve()),
+            reader_cfg=dict(input_columns=["question"], output_column="answer", test_split="test"),
+            infer_cfg=dict(
+                prompt_template=dict(type="ais_bench.benchmark.openicl.icl_prompt_template.PromptTemplate",
+                                     template=template),
+                retriever=dict(type="ais_bench.benchmark.openicl.icl_retriever.ZeroRetriever"),
+                inferencer=dict(type="ais_bench.benchmark.openicl.icl_inferencer.GenInferencer"),
+            ),
+            eval_cfg=dict(
+                evaluator=dict(type="ais_bench.benchmark.datasets.Gsm8kEvaluator"),
+                pred_postprocessor=dict(type="ais_bench.benchmark.datasets.gsm8k_postprocess"),
+                dataset_postprocessor=dict(type="ais_bench.benchmark.datasets.gsm8k_dataset_postprocess"),
+            ),
+        )]
     postprocessor = {"type": "ais_bench.benchmark.datasets.GPQA_Simple_Eval_postprocess"}
     if prompt_mode == "str":
         postprocessor = {
@@ -306,18 +379,20 @@ def dataset_configs(root, settings):
 
 
 def generate_configs(root, settings):
+    dataset_name = settings["dataset"].get("name", "gpqa")
     datasets = dataset_configs(root, settings["dataset"])
     models_text = "models = " + pformat([settings["model"]], width=100, sort_dicts=False) + "\n"
-    datasets_text = "gpqa_datasets = " + pformat(datasets, width=100, sort_dicts=False) + "\n"
+    datasets_var = f"{dataset_name}_datasets"
+    datasets_text = datasets_var + " = " + pformat(datasets, width=100, sort_dicts=False) + "\n"
     config_dir = root / "configs"
     model_path = config_dir / "models" / "vllm_api" / "vllm_api_general_chat.py"
-    dataset_path = config_dir / "datasets" / "gpqa" / "gpqa_local.py"
-    combined_path = config_dir / "gpqa_benchmark.py"
+    dataset_path = config_dir / "datasets" / dataset_name / f"{dataset_name}_local.py"
+    combined_path = config_dir / f"{dataset_name}_benchmark.py"
     files = {
         model_path: HEADER + models_text,
         dataset_path: HEADER + datasets_text,
         combined_path: HEADER + models_text + "\n" + datasets_text +
-        "\ndatasets = gpqa_datasets\nsummarizer = dict(attr='accuracy')\n",
+        f"\ndatasets = {datasets_var}\nsummarizer = dict(attr='accuracy')\n",
     }
     for path, content in files.items():
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -359,11 +434,12 @@ def main(argv=None):
     extra = argv[separator + 1:]
     try:
         settings = load_settings(args, ROOT)
-        counts = validate_data(ROOT, settings["dataset"]["subsets"])
+        dataset_name = settings["dataset"]["name"]
+        counts = validate_data(ROOT, settings["dataset"]["subsets"], dataset_name)
         config_path = generate_configs(ROOT, settings)
         command = build_command(ROOT, config_path, settings, args, extra)
         print(f"Tool directory: {ROOT}", flush=True)
-        print("Local GPQA: " + ", ".join(f"{name}={count}" for name, count in counts.items()), flush=True)
+        print(f"Local {dataset_name.upper()}: " + ", ".join(f"{name}={count}" for name, count in counts.items()), flush=True)
         print(f"Config: {config_path}\nResults: {ROOT / 'outputs'}", flush=True)
         printable = subprocess.list2cmdline(command) if os.name == "nt" else shlex.join(command)
         print(f"Command: {printable}", flush=True)
@@ -380,6 +456,7 @@ def main(argv=None):
         if returncode == 0 and should_collect_acc_len(settings, extra):
             report_acc_len(settings["model"], settings["acc_len"], ROOT / "outputs" / "acc_len",
                            context=dict(model=settings["model"]["model"],
+                                        dataset=dataset_name,
                                         subsets=settings["dataset"]["subsets"],
                                         num_prompts=settings["run"]["num_prompts"]))
         return returncode
